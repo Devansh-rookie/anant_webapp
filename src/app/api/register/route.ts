@@ -9,18 +9,13 @@ import { NextRequest, NextResponse } from 'next/server';
 import path from 'path';
 import z from 'zod';
 
-import keystore from '@/lib/keystore/store';
 import prisma from '@/lib/PrismaClient/db';
 
 const RegistrationSchema = z.object({
-  roll_number: z
-    .string()
-    .min(1, 'Roll number is required')
-    .regex(/^\d+$/, 'Roll number must be a number'),
+  token: z.string().min(1, 'Verification token is required'),
   username: z.string().min(1, 'Username is required'),
   password: z.string().min(8, 'Password must be at least 8 characters'),
   confirmpassword: z.string().min(8, 'Confirm password is required'),
-  otp: z.string().min(6, 'OTP is required'),
 });
 
 async function parseCSV(rno: number) {
@@ -63,14 +58,28 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    let { roll_number, username, password, confirmpassword, otp } = body;
+    let { token, username, password, confirmpassword } = body;
 
     // trimming whitespaces
     password = password.trim();
     confirmpassword = confirmpassword.trim();
-    otp = otp.trim();
     username = username.trim();
-    roll_number = roll_number.trim();
+
+    // Verify Token
+    const { verifyVerificationToken } = await import('@/lib/actions/VerificationJwt');
+    const payload = verifyVerificationToken(token);
+
+    if (!payload) {
+      return NextResponse.json(
+        {
+          status: 400,
+          message: 'Invalid or expired verification link',
+        },
+        { status: 400 }
+      );
+    }
+
+    const { roll_number } = payload;
 
     // check for registered user
     const isExisting = await prisma.user.findUnique({
@@ -104,44 +113,6 @@ export async function POST(req: NextRequest) {
         { status: 400 }
       );
     }
-    const value = await keystore.get(roll_number);
-    if (!value) {
-      return NextResponse.json(
-        {
-          status: 400,
-          message: 'Verification not done!',
-        },
-        { status: 400 }
-      );
-    }
-
-    const { hashedOTP, time } = await JSON.parse(value);
-    const time_diff = Date.now() - time;
-
-    // 10 min time limit
-    if (time_diff > 600000) {
-      return NextResponse.json(
-        {
-          status: 400,
-          message: 'Verification expired!',
-        },
-        { status: 400 }
-      );
-    }
-
-    const isOTPCorrect = await bcryptjs.compare(otp, hashedOTP);
-    if (!isOTPCorrect) {
-      return NextResponse.json(
-        {
-          status: 400,
-          message: 'Invalid OTP!',
-        },
-        { status: 400 }
-      );
-    }
-
-    // delete OTP from redis
-    await keystore.delete(roll_number);
 
     // hash password
     const salt = await bcryptjs.genSalt(10);
@@ -170,11 +141,11 @@ export async function POST(req: NextRequest) {
           branch_options[user_details['branch'] as keyof typeof branch_options],
         position:
           position_options[
-            user_details['position'] as keyof typeof position_options
+          user_details['position'] as keyof typeof position_options
           ],
         club_dept: [
           club_dept_options[
-            user_details['club_dept'] as keyof typeof club_dept_options
+          user_details['club_dept'] as keyof typeof club_dept_options
           ],
         ],
       };

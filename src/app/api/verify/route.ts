@@ -1,15 +1,7 @@
 import { PrismaClient } from '@prisma/client';
-import bcryptjs from 'bcryptjs';
 import { NextRequest, NextResponse } from 'next/server';
-
 import { isRollNumberValid } from '@/helpers/extras';
 import sendEmail, { mailOptions } from '@/helpers/mailer';
-import keystore from '@/lib/keystore/store';
-
-type redis_value = {
-  hashedOTP: string;
-  time: number;
-};
 
 const prisma = new PrismaClient();
 
@@ -50,24 +42,15 @@ export async function POST(req: NextRequest) {
     // college mail_id
     const to = roll_number + '@nitkkr.ac.in';
 
-    // OTP generation
-    const max = 1000000;
-    const OTP: string = String(Math.floor(Math.random() * max)).padStart(
-      6,
-      '0'
-    );
+    // Generate JWT Token
+    // We import dynamically to avoid circular dependencies if any, though not strictly necessary here but good for consistency
+    const { signVerificationToken } = await import('@/lib/actions/VerificationJwt');
+    const token = signVerificationToken({
+      roll_number,
+      generated_time: Date.now(),
+    });
 
-    // hashing OTP
-    const salt = await bcryptjs.genSalt(10);
-    const hashedOTP = await bcryptjs.hash(OTP, salt);
-
-    // storing OTP in DB
-    const value: redis_value = {
-      hashedOTP: hashedOTP,
-      time: Date.now(),
-    };
-    console.log('OTP: ', OTP);
-    await keystore.set(roll_number, JSON.stringify(value));
+    const verificationLink = `${process.env.NEXTAUTH_URL || req.nextUrl.origin}/register?token=${token}`;
 
     if (!process.env.MAIL_ID) {
       return NextResponse.json({ message: '.env missing' }, { status: 500 });
@@ -76,13 +59,14 @@ export async function POST(req: NextRequest) {
     const maildata: mailOptions = {
       from: process.env.MAIL_ID,
       to: to,
-      subject: 'OTP Verification For Registration in Anant',
-      text: `Please don't share the OTP with anyone.\n Your OTP for registering into Anant's website is ${OTP}. \n Validity ends in 10 minutes \n Thank You`,
+      subject: 'Verify Registration for Anant',
+      text: `Click the following link to verify your identity and complete registration:\n\n${verificationLink}\n\nThis link is valid for 15 minutes.\n\nThank You`,
+      html: `<p>Click the following link to verify your identity and complete registration:</p><p><a href="${verificationLink}">${verificationLink}</a></p><p>This link is valid for 15 minutes.</p><p>Thank You</p>`
     };
 
     try {
       await sendEmail(maildata);
-      console.log(OTP);
+      console.log(`Verification link sent to ${to}: ${verificationLink}`);
     } catch (err) {
       console.log('error occured\n', err);
       return NextResponse.json(
@@ -91,7 +75,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    return NextResponse.json({ message: 'Email sent successfully' });
+    return NextResponse.json({ message: 'Verification link sent successfully' });
   } catch (err) {
     console.log(err);
     return NextResponse.json(
